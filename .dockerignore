@@ -1,0 +1,46 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files (credentials should come from Cloud Run service identity)
+.env
+.env.*
+serviceaccount.json
+*.json
+
+# Documentation
+docs/
+*.md
+
+# Tests
+tests/
+test/
+*_test.py
+test_*.py
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Misc
+.DS_Store
+Thumbs.db
