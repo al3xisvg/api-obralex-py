@@ -8,10 +8,10 @@ class FieldOption(BaseModel):
     unit: str | None = None
 
 
-class ProductSchemaResponse(BaseModel):
+class InventorySchemaResponse(BaseModel):
     category: str | None
     subcategory: str | None
-    product_hint: str | None
+    inventory_hint: str | None
     required_fields: list[str]
     field_options: dict[str, FieldOption]
     schema_source: str

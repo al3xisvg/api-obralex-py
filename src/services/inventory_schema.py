@@ -75,7 +75,7 @@ class InventorySchemaService:
             return {
                 "category": None,
                 "subcategory": None,
-                "product_hint": None,
+                "inventory_hint": None,
                 "required_fields": DEFAULT_SCHEMA["required_fields"],
                 "field_options": DEFAULT_SCHEMA["field_options"],
                 "schema_source": "default",
@@ -99,7 +99,7 @@ class InventorySchemaService:
         return {
             "category": category,
             "subcategory": subcategory,
-            "product_hint": product.product,
+            "inventory_hint": product.product,
             "required_fields": schema["required_fields"],
             "field_options": schema["field_options"],
             "schema_source": source,

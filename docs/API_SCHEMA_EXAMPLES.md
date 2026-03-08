@@ -4,14 +4,14 @@ Base URL: `http://localhost:8000/api/v1`
 
 ---
 
-## 1. GET /products/schema
+## 1. GET /inventories/schema
 
-Endpoint principal. Es el que usa equip-mcp-hub como tool `get_product_schema`.
+Endpoint principal. Es el que usa equip-mcp-hub como tool `get_inventory_schema`.
 
 ### Producto con schema de subcategoria
 
 ```
-GET /api/v1/products/schema?query=cable electrico
+GET /api/v1/inventories/schema?query=cable electrico
 ```
 
 Respuesta esperada:
@@ -20,7 +20,7 @@ Respuesta esperada:
 {
   "category": "Electricidad",
   "subcategory": "Cables",
-  "product_hint": "Cable THW 14 AWG Rojo",
+  "inventory_hint": "Cable THW 14 AWG Rojo",
   "required_fields": ["color"],
   "field_options": {
     "color": {
@@ -36,7 +36,7 @@ Respuesta esperada:
 ### Producto con fallback a categoria
 
 ```
-GET /api/v1/products/schema?query=pintura esmalte
+GET /api/v1/inventories/schema?query=pintura esmalte
 ```
 
 Respuesta esperada:
@@ -45,7 +45,7 @@ Respuesta esperada:
 {
   "category": "Pinturas",
   "subcategory": "Esmaltes",
-  "product_hint": "Pintura esmalte sintetico",
+  "inventory_hint": "Pintura esmalte sintetico",
   "required_fields": ["color", "presentation"],
   "field_options": {
     "color": {
@@ -65,7 +65,7 @@ Respuesta esperada:
 ### Producto sin schema -> default
 
 ```
-GET /api/v1/products/schema?query=martillo
+GET /api/v1/inventories/schema?query=martillo
 ```
 
 Respuesta esperada:
@@ -74,7 +74,7 @@ Respuesta esperada:
 {
   "category": "Herramientas",
   "subcategory": "Martillos",
-  "product_hint": "Martillo de una Stanley",
+  "inventory_hint": "Martillo de una Stanley",
   "required_fields": ["especificacion", "cantidad"],
   "field_options": {
     "especificacion": {
@@ -94,7 +94,7 @@ Respuesta esperada:
 ### Producto no encontrado en Vertex
 
 ```
-GET /api/v1/products/schema?query=xyzproductoinexistente
+GET /api/v1/inventories/schema?query=xyzproductoinexistente
 ```
 
 Respuesta esperada:
@@ -103,7 +103,7 @@ Respuesta esperada:
 {
   "category": null,
   "subcategory": null,
-  "product_hint": null,
+  "inventory_hint": null,
   "required_fields": ["especificacion", "cantidad"],
   "field_options": {
     "especificacion": {
@@ -171,10 +171,10 @@ Respuesta esperada:
 ## Flujo de prueba sugerido
 
 1. `GET /schemas/status` -> verificar que `loaded: false` (primera vez)
-2. `GET /products/schema?query=clavos` -> dispara la primera carga desde GCS + busqueda en Vertex
+2. `GET /inventories/schema?query=clavos` -> dispara la primera carga desde GCS + busqueda en Vertex
 3. `GET /schemas/status` -> ahora `loaded: true` con los conteos
-4. `GET /products/schema?query=cable electrico` -> schema de subcategoria
-5. `GET /products/schema?query=pintura esmalte` -> fallback a categoria
-6. `GET /products/schema?query=martillo` -> fallback a default
+4. `GET /inventories/schema?query=cable electrico` -> schema de subcategoria
+5. `GET /inventories/schema?query=pintura esmalte` -> fallback a categoria
+6. `GET /inventories/schema?query=martillo` -> fallback a default
 7. `POST /schemas/reload` -> fuerza recarga
 8. `GET /schemas/status` -> `loaded_at` actualizado
