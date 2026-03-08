@@ -1,8 +1,16 @@
-# Plan: Esquemas de Producto desde Cloud Storage
+# Plan: Esquemas de Inventario desde Cloud Storage
 
 ## Objetivo
 
-Exponer metadata de `required_fields` y `field_options` por categoria/subcategoria desde api-obralex, usando un JSON almacenado en Cloud Storage como fuente de verdad. Esto permite que el agente (api-maia) sepa que preguntar al cliente antes de buscar productos especificos.
+Exponer metadata de `required_fields` y `field_options` por categoria/subcategoria desde api-obralex, usando un JSON almacenado en Cloud Storage como fuente de verdad. Esto permite que el agente (api-maia) sepa que preguntar al cliente antes de buscar inventarios especificos.
+
+## Glosario
+
+| Termino | Significado |
+|---------|------------|
+| **Inventory** | Material de la startup (lo que tenemos en stock). Coleccion `inventories` en MongoDB, indexado en Vertex AI Search |
+| **Product** | Material que el cliente solicita. Cada product se enlaza con 1 inventory |
+| **Inventory Schema** | Metadata (`required_fields`, `field_options`) que define que campos necesita el cliente especificar para encontrar un inventory |
 
 ## Problema
 
@@ -28,7 +36,7 @@ Actualmente Vertex AI Search tiene los datos del producto (`size`, `material`, e
 
 | Fuente | Que aporta |
 |--------|-----------|
-| **Cloud Storage** (product_schemas.json) | Esquemas: `required_fields`, `field_options` por categoria y subcategoria |
+| **Cloud Storage** (inventory_schemas.json) | Esquemas: `required_fields`, `field_options` por categoria y subcategoria |
 | **Vertex AI Search** (datastore productos) | Identificacion de producto: `category`, `subcategory`, `price`, `stock`, etc. |
 
 ### Flujo completo
@@ -62,9 +70,9 @@ Cliente recibe: "Para los clavos necesito algunos detalles. De que medida? (1", 
 
 ```
 1. Colab: re-ejecutar analisis de inventarios
-2. Descargar product_schemas_clean.json
+2. Descargar inventory_schemas_clean.json
 3. Subir a Cloud Storage:
-   gsutil cp product_schemas_clean.json gs://BUCKET/schemas/product_schemas.json
+   gsutil cp inventory_schemas_clean.json gs://BUCKET/schemas/inventory_schemas.json
 4. api-obralex recarga automaticamente en el proximo ciclo de TTL (sin deploy)
 ```
 
@@ -75,12 +83,12 @@ Cliente recibe: "Para los clavos necesito algunos detalles. De que medida? (1", 
 ```
 gs://BUCKET_NAME/
   schemas/
-    product_schemas.json     <- el archivo generado por Colab
+    inventory_schemas.json     <- el archivo generado por Colab
 ```
 
-### Formato del JSON (product_schemas.json)
+### Formato del JSON (inventory_schemas.json)
 
-Es el output de PLAN_INVENTORY_ANALYSIS.md (product_schemas_clean.json):
+Es el output de PLAN_INVENTORY_ANALYSIS.md (inventory_schemas_clean.json):
 
 ```json
 {
@@ -183,7 +191,7 @@ No se agregan dependencias nuevas. `google-cloud-storage` ya esta disponible via
 |---------|--------|-------------|
 | `src/core/config.py` | MODIFICAR | Agregar `GCS_BUCKET`, `GCS_SCHEMAS_PATH`, `SCHEMAS_TTL_SECONDS` |
 | `src/services/schema_store.py` | CREAR | Carga JSON desde Cloud Storage, cache en memoria con TTL |
-| `src/services/product_schema.py` | CREAR | Servicio que resuelve esquemas usando SchemaStore + Vertex AI Search |
+| `src/services/inventory_schema.py` | CREAR | Servicio que resuelve esquemas usando SchemaStore + Vertex AI Search |
 | `src/models/schema.py` | CREAR | Modelos Pydantic para request/response |
 | `src/api/schema.py` | CREAR | Router con endpoints |
 | `main.py` | MODIFICAR | Registrar nuevo router |
@@ -195,7 +203,7 @@ Agregar:
 ```python
 # Cloud Storage - Schemas
 GCS_BUCKET: str = os.getenv("GCS_BUCKET", "")
-GCS_SCHEMAS_PATH: str = os.getenv("GCS_SCHEMAS_PATH", "schemas/product_schemas.json")
+GCS_SCHEMAS_PATH: str = os.getenv("GCS_SCHEMAS_PATH", "schemas/inventory_schemas.json")
 SCHEMAS_TTL_SECONDS: int = int(os.getenv("SCHEMAS_TTL_SECONDS", "3600"))  # 1 hora
 ```
 
@@ -244,7 +252,7 @@ class SchemaStore:
 - Despues del TTL: siguiente request descarga de nuevo desde GCS
 - Si GCS falla: usa el cache anterior (no rompe el servicio)
 
-### Paso 3: Servicio de esquemas (`src/services/product_schema.py`)
+### Paso 3: Servicio de esquemas (`src/services/inventory_schema.py`)
 
 Responsabilidades:
 - `get_schema_for_query(query)`: flujo principal
@@ -322,7 +330,7 @@ El endpoint principal (`/products/schema`) es el que usa equip-mcp-hub como tool
 ```env
 # Cloud Storage - Schemas
 GCS_BUCKET=nombre-del-bucket
-GCS_SCHEMAS_PATH=schemas/product_schemas.json
+GCS_SCHEMAS_PATH=schemas/inventory_schemas.json
 SCHEMAS_TTL_SECONDS=3600
 ```
 
@@ -330,7 +338,7 @@ SCHEMAS_TTL_SECONDS=3600
 
 ## Datos actuales del MVP
 
-Resultado del analisis en Colab (product_schemas_clean.json):
+Resultado del analisis en Colab (inventory_schemas_clean.json):
 
 ### Subcategorias con schema (17)
 
@@ -379,7 +387,7 @@ Resultado del analisis en Colab (product_schemas_clean.json):
    a. Ejecutar notebook de Colab
    b. Revisar resultados
    c. Subir JSON a Cloud Storage:
-      gsutil cp product_schemas_clean.json gs://BUCKET/schemas/product_schemas.json
+      gsutil cp inventory_schemas_clean.json gs://BUCKET/schemas/inventory_schemas.json
 3. api-obralex recarga automaticamente en el proximo ciclo de TTL
 ```
 
@@ -405,10 +413,10 @@ curl -X POST https://api-obralex-url/schemas/reload
 ## Dependencias entre proyectos
 
 ```
-Google Colab            -> Analiza inventories, genera product_schemas_clean.json
+Google Colab            -> Analiza inventories, genera inventory_schemas_clean.json
         |
         v
-Cloud Storage (bucket)  -> Almacena product_schemas.json
+Cloud Storage (bucket)  -> Almacena inventory_schemas.json
         |                  (se sube manualmente o automatizado)
         v
 api-obralex-py          -> Lee Cloud Storage (cache TTL) + Vertex AI Search

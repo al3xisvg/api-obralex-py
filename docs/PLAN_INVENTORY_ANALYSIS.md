@@ -6,7 +6,7 @@ Analizar la coleccion `inventories` de MongoDB agrupando por `categories`/`subca
 1. **required_fields**: campos con alta completitud que el cliente debe especificar para cotizar
 2. **field_options**: valores unicos reales de cada campo para construir las opciones de seleccion
 
-El resultado se usara para poblar `required_fields` y `field_options` en las colecciones `categories` y `subcategories` (ver PLAN_PRODUCT_SCHEMA.md).
+El resultado se exporta como `inventory_schemas_clean.json` y se sube a Cloud Storage para que api-obralex lo consuma con cache TTL (ver PLAN_PRODUCT_SCHEMA.md).
 
 ---
 
@@ -70,7 +70,7 @@ Ademas, para que una categoria/subcategoria sea considerada valida para el anali
 
 ---
 
-## Observaciones del primer analisis (product_schemas.json raw)
+## Observaciones del primer analisis (inventory_schemas.json raw)
 
 Al revisar los resultados del primer analisis se detectaron los siguientes problemas:
 
@@ -214,7 +214,7 @@ El campo `variant` necesita redistribuirse a los campos correctos antes de que e
 Una vez redistribuido `variant`:
 - Los campos como `measure`, `weight`, `color`, `size` tendran mayor completitud
 - El analisis de required_fields sera mas preciso
-- Se re-ejecuta el notebook y se genera un nuevo `product_schemas_clean.json`
+- Se re-ejecuta el notebook y se genera un nuevo `inventory_schemas_clean.json`
 
 ### Mientras tanto
 
@@ -228,20 +228,20 @@ El analisis actual funciona sin `variant`. Los campos que ya tienen buena comple
 [Google Colab Notebook]
         |
         v
-docs/product_schemas.json           <- raw del primer analisis (referencia historica)
+docs/inventory_schemas.json           <- raw del primer analisis (referencia historica)
         |
         v
 [Limpieza: quitar variant/brand/unity, normalizar, filtrar basura]
         |
         v
-docs/product_schemas_clean.json     <- version limpia, lista para MongoDB
+docs/inventory_schemas_clean.json     <- version limpia, lista para Cloud Storage
         |
         v
-[Script de insercion o celda en Colab]
+[Subir a Cloud Storage]
+  gsutil cp inventory_schemas_clean.json gs://BUCKET/schemas/inventory_schemas.json
         |
         v
-MongoDB: categories.required_fields + categories.field_options
-MongoDB: subcategories.required_fields + subcategories.field_options
+api-obralex: lee desde Cloud Storage con cache TTL (sin deploy)
 ```
 
 ---
@@ -266,7 +266,7 @@ Solo se vuelve a consultar MongoDB al final para insertar resultados.
 7. Visualizacion (heatmap)
 8. Exportar JSON limpio
 9. Reporte de subcategorias sin schema
-10. (Opcional) Insercion en MongoDB
+10. (Opcional) Subir a Cloud Storage
 ```
 
 ### Celda 1: Setup y carga unica desde MongoDB
@@ -595,16 +595,16 @@ output = {
     "category_schemas": category_schemas
 }
 
-with open("product_schemas_clean.json", "w", encoding="utf-8") as f:
+with open("inventory_schemas_clean.json", "w", encoding="utf-8") as f:
     json.dump(output, f, ensure_ascii=False, indent=2)
 
-print("Exportado a product_schemas_clean.json")
+print("Exportado a inventory_schemas_clean.json")
 print(f"  Subcategorias: {len(subcategory_schemas)}")
 print(f"  Categorias: {len(category_schemas)}")
 
 # Descargar en Colab
 from google.colab import files
-files.download("product_schemas_clean.json")
+files.download("inventory_schemas_clean.json")
 ```
 
 ### Celda 9: Reporte de subcategorias SIN schema
@@ -625,31 +625,24 @@ if no_schema:
         print(f"  {subcat} ({total} prod) - mejor campo: {best_field} ({best_pct}%)")
 ```
 
-### Celda 10: (Opcional) Insercion en MongoDB
+### Celda 10: (Opcional) Subir a Cloud Storage
 
 ```python
-# PRECAUCION: modifica datos en produccion
-# Descomentar solo despues de revisar product_schemas_clean.json
+# Subir directamente desde Colab a Cloud Storage
+# Requiere autenticacion con service account o cuenta de Google
 
-# for subcat_name, schema in subcategory_schemas.items():
-#     result = db.subcategories.update_many(
-#         {"name": subcat_name, "status": "active"},
-#         {"$set": {
-#             "required_fields": schema["required_fields"],
-#             "field_options": schema["field_options"]
-#         }}
-#     )
-#     print(f"  Subcategory '{subcat_name}': {result.modified_count} actualizados")
+from google.cloud import storage
 
-# for cat_name, schema in category_schemas.items():
-#     result = db.categories.update_many(
-#         {"name": cat_name, "status": "active"},
-#         {"$set": {
-#             "required_fields": schema["required_fields"],
-#             "field_options": schema["field_options"]
-#         }}
-#     )
-#     print(f"  Category '{cat_name}': {result.modified_count} actualizados")
+BUCKET_NAME = "nombre-del-bucket"
+DESTINATION_PATH = "schemas/inventory_schemas.json"
+
+client_gcs = storage.Client()
+bucket = client_gcs.bucket(BUCKET_NAME)
+blob = bucket.blob(DESTINATION_PATH)
+blob.upload_from_filename("inventory_schemas_clean.json")
+
+print(f"Subido a gs://{BUCKET_NAME}/{DESTINATION_PATH}")
+print("api-obralex recargara automaticamente en el proximo ciclo de TTL")
 ```
 
 ---
@@ -677,11 +670,12 @@ El proyecto esta orientado a detectar inventarios que SI tienen informacion comp
 Este analisis no es un one-shot. El flujo es iterativo:
 
 ```
-1. Ejecutar analisis con datos actuales → product_schemas_clean.json v1
-2. Redistribuir variant → datos mas limpios
-3. Re-ejecutar analisis → product_schemas_clean.json v2
-4. Revision humana → ajustes manuales
-5. Insertar en MongoDB
-6. Probar con el agente (api-maia)
-7. Ajustar schemas segun feedback real de usuarios
+1. Ejecutar analisis con datos actuales → inventory_schemas_clean.json v1
+2. Subir a Cloud Storage → api-obralex recarga automaticamente
+3. Redistribuir variant → datos mas limpios
+4. Re-ejecutar analisis → inventory_schemas_clean.json v2
+5. Revision humana → ajustes manuales
+6. Subir version actualizada a Cloud Storage
+7. Probar con el agente (api-maia)
+8. Ajustar schemas segun feedback real de usuarios
 ```
