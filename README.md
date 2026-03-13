@@ -122,8 +122,15 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 docker push us-central1-docker.pkg.dev/maia-466013/ar-api-obralex-prod/api-obralex-prod:1
 ```
 
+## Dataset de inventarios
+
+El datastore de Vertex AI Search se alimenta desde una tabla BigQuery (`inventories_sanitized_prod`) con 3,091 registros de materiales de construccion, 12 categorias, 49 marcas y 39 columnas de atributos.
+
+Ver detalle completo y queries de prueba en `docs/inventories_sanitized_prod_v1.md`.
+
 ## Documentacion adicional
 
+- `docs/inventories_sanitized_prod_v1.md` — Resumen del dataset de inventarios y 50 queries de prueba para el endpoint de schema
 - `docs/API_SCHEMA_EXAMPLES.md` — Ejemplos de requests para los endpoints de schema
 - `docs/PLAN_PRODUCT_SCHEMA.md` — Plan de arquitectura de schemas desde Cloud Storage
 - `docs/PLAN_INVENTORY_ANALYSIS.md` — Plan de analisis de inventarios en Colab
