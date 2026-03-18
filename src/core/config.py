@@ -5,9 +5,7 @@ load_dotenv()
 
 
 class Config:
-    GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv(
-        "GOOGLE_APPLICATION_CREDENTIALS", ""
-    )
+    GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
     GCP_PROJECT_ID: str = "maia-466013"
 

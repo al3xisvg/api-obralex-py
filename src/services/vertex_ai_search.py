@@ -67,9 +67,7 @@ class VertexAISearchService:
             return discoveryengine.SearchServiceClient()
 
         api_endpoint = f"{self.location}-discoveryengine.googleapis.com"
-        return discoveryengine.SearchServiceClient(
-            client_options={"api_endpoint": api_endpoint}
-        )
+        return discoveryengine.SearchServiceClient(client_options={"api_endpoint": api_endpoint})
 
     @staticmethod
     def _extract_first(value) -> str:

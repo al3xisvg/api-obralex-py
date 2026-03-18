@@ -12,9 +12,7 @@ def is_cloud_run() -> bool:
 
 def setup_gcp_credentials():
     if is_cloud_run():
-        logger.info(
-            "🌐 Detectado entorno Cloud Run - usando service account automático"
-        )
+        logger.info("🌐 Detectado entorno Cloud Run - usando service account automático")
         # En Cloud Run, las credenciales se manejan automáticamente
         # No necesitamos hacer nada
         return

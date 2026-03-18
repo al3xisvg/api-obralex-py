@@ -23,9 +23,7 @@ _schema_service = InventorySchemaService(search_service=_search_service)
 
 
 @router.get("/inventories/schema", response_model=InventorySchemaResponse)
-async def get_inventory_schema(
-    query: str = Query(..., min_length=1, description="Inventario a buscar"),
-):
+async def get_inventory_schema(query: str = Query(..., min_length=1, description="Inventario a buscar")):
     return _schema_service.get_schema_for_query(query)
 
 
