@@ -1,0 +1,458 @@
+# Plan: Simplificacion del Agente — Deteccion vs Calculo
+
+## Objetivo
+
+Separar responsabilidades entre el agente (Gemini) y el servidor MCP:
+
+- **Agente (api-maia)**: cerebro de deteccion — identifica materiales del mensaje del cliente
+- **MCP Server (mcp-hub-equip)**: cerebro de calculo — enriquece productos con schema, atributos, completitud
+
+## Problema actual
+
+Hoy el agente hace demasiado:
+
+```
+Gemini detecta material
+  → Gemini llama get_inventory_schema
+  → Gemini interpreta required_fields
+  → Gemini mapea atributos a campos tipados
+  → Gemini llama search_construction_materials
+  → Backend calcula missing_attributes, completion_percentage, status
+  → Backend persiste en Firestore + BigQuery
+```
+
+El agente mezcla deteccion con analisis de schema, lo cual genera:
+- Inconsistencias (brand asumido, atributos perdidos, missing_attributes erroneo)
+- Prompt largo y fragil (muchas reglas para que Gemini no se equivoque)
+- Dificil de escalar (cada nuevo campo requiere cambio en prompt + backend)
+
+## Arquitectura propuesta
+
+```
+┌─────────────────────────────────┐     ┌──────────────────────────────────────┐
+│        AGENTE (api-maia)        │     │       MCP SERVER (mcp-hub-equip)     │
+│                                 │     │                                      │
+│  Gemini detecta del mensaje:    │     │  Recibe lista de materials[]         │
+│  - materials: [                 │     │  Por cada material:                  │
+│      { description, quantity,   │     │    1. get_inventory_schema(desc)     │
+│        unit, brand }            │     │    2. Mapear atributos               │
+│    ]                            │     │    3. Calcular missing_attributes    │
+│  - delivery_location            │     │    4. Calcular completion_%          │
+│  - delivery_date                │     │    5. Calcular status                │
+│  - tax_id                       │     │    6. search si esta completo        │
+│  - email                        │     │                                      │
+│  - suggested_question           │     │  Retorna: products[] enriquecidos    │
+│                                 │     │    con original, product, brand,     │
+│  Llama: analyze_materials(      │     │    attributes, required_fields,      │
+│    materials=[{description:     │     │    missing_attributes, status,       │
+│    "fierros corrugados 1/2",    │     │    completion_%, match_id            │
+│    quantity: 10, unit: "varilla"│     │                                      │
+│    brand: null}, ...]           │     │                                      │
+│  )                              │     │                                      │
+│                                 │     │                                      │
+│  Recibe products[] del MCP      │     │                                      │
+│  Persiste en Firebase + BQ      │     │                                      │
+└─────────────────────────────────┘     └──────────────────────────────────────┘
+```
+
+## Cambios por capa
+
+### Capa 1 — Nuevo MCP tool: `analyze_materials`
+
+**Servidor:** mcp-hub-equip
+**Endpoint destino:** api-obralex-py
+
+```
+Tool: analyze_materials
+Input:
+  materials: [                   # array de objetos (Gemini extrae los campos basicos)
+    {
+      "description": "fierros corrugados 1/2",   # descripcion del producto (sin cantidad/unidad/marca)
+      "quantity": 10,                              # extraido por Gemini
+      "unit": "varilla",                           # extraido por Gemini (null si no se menciono)
+      "brand": null                                # extraido por Gemini (null si no se menciono)
+    }
+  ]
+
+Output:
+  products: [
+    {
+      "original": "fierros corrugados 1/2",
+      "product": "fierro corrugado",
+      "brand": null,
+      "unit": "varilla",
+      "quantity": 10,
+      "category": "Acero",
+      "subcategory": "Barras de Acero",
+      "schema_source": "subcategory",
+      "required_fields": ["measure"],
+      "attributes": {
+        "measure": "1/2"
+      },
+      "missing_attributes": [],
+      "total_required_fields": 1,
+      "completion_percentage": 100.0,
+      "status": "complete",
+      "match_id": "INV-042"
+    }
+  ]
+```
+
+**Separacion de responsabilidades en el input:**
+
+| Campo | Quien lo extrae | Por que |
+|-------|----------------|---------|
+| `description` | Gemini | Es la descripcion del producto tal como lo menciona el cliente, sin cantidad/unidad/marca. El backend usa esto para buscar en schema + Vertex |
+| `quantity` | Gemini | Es dato conversacional ("necesito 10...", "dame 50..."), trivial para un LLM |
+| `unit` | Gemini | Es dato conversacional ("bolsas", "rollos", "varillas"), trivial para un LLM |
+| `brand` | Gemini | Solo si el cliente la menciona explicitamente. Trivial para un LLM, dificil con regex |
+| `attributes` | MCP server | Requiere conocer el schema (required_fields, field_options). Es logica deterministica |
+| `category/subcategory` | MCP server | Requiere buscar en Vertex AI Search + mapear al schema |
+| `completion_%/status` | MCP server | Requiere calcular contra required_fields del schema |
+
+El MCP server internamente:
+1. Por cada material en `materials[]`, usa `description` para llamar `get_inventory_schema` → identificar categoria + required_fields
+2. Mapea valores de `description` a `attributes` tipados segun el schema
+3. Pasa `quantity`, `unit`, `brand` directamente al producto (vienen de Gemini)
+4. Calcula `missing_attributes` = required_fields que no estan en attributes
+5. Calcula `completion_percentage` y `status`
+6. Si completo, llama `search_construction_materials` para obtener `match_id`
+7. Retorna array de products enriquecidos
+
+### Capa 2 — Prompt simplificado (api-maia)
+
+El prompt de analisis se reduce drasticamente. Gemini solo necesita:
+
+```
+FORMATO DE RESPUESTA:
+{
+  "delivery_location": "string o null",
+  "delivery_date": "string o null",
+  "tax_id": "string o null",
+  "email": "string o null",
+  "materials": [
+    {
+      "description": "descripcion del producto (sin cantidad, unidad ni marca)",
+      "quantity": number o null,
+      "unit": "string o null",
+      "brand": "string o null"
+    }
+  ],
+  "suggested_question": "string o null"
+}
+
+REGLAS:
+- materials = lista de objetos, uno por cada material mencionado por el cliente
+- description = SOLO la descripcion del producto y sus atributos tecnicos (ej. "fierros corrugados 1/2", "cable thw 14 rojo")
+- quantity = cantidad numerica (ej. 10, 50). null si no se menciono
+- unit = unidad de medida (ej. "bolsa", "rollo", "varilla", "metro"). null si no se menciono
+- brand = marca SOLO si el cliente la menciono explicitamente. null si no la menciono
+- NO incluir cantidad, unidad ni marca dentro de description
+- SIEMPRE acumular materiales de mensajes anteriores
+- Si el cliente actualiza info de un material existente, actualizar el objeto correspondiente
+```
+
+**Se eliminan del prompt:**
+- JSON complejo de MaterialItem con attributes, required_fields, missing_attributes
+- Reglas de status, completion_percentage
+- Reglas de brand "asumido" (Gemini solo reporta si el cliente lo dijo)
+- Instrucciones de get_inventory_schema y search_construction_materials
+- Reglas de categorias activas (el MCP server maneja)
+
+### Capa 3 — Agent service simplificado (api-maia)
+
+```python
+# Flujo actual (complejo)
+result = await self.chat(message, history, system_instruction)  # Gemini + tools
+analysis = self._parse_analysis_response(result["response"])    # Parse JSON complejo
+self._calculate_completeness(material)                          # Backend calcula
+await firestore_service.update_analysis_obralex(...)            # Persistir
+await bigquery_service.insert_analysis(...)                     # Persistir
+
+# Flujo propuesto (simple)
+result = await self.chat(message, history, system_instruction)  # Gemini detecta materials[]
+detection = self._parse_detection_response(result["response"])  # Parse JSON simple
+products = await self.mcp_client.call_tool(                     # MCP enriquece
+    "analyze_materials",
+    {"materials": [m.dict() for m in detection.materials]}       # [{description, quantity, unit, brand}]
+)
+await firestore_service.update_analysis_obralex(...)            # Persistir
+await bigquery_service.insert_analysis(...)                     # Persistir
+```
+
+**Se eliminan de agent.py:**
+- `_calculate_completeness()` → se mueve al MCP server
+- Guardrail de schema-first → ya no aplica (Gemini no llama schema)
+- Logica de `schema_called_for` → innecesaria
+
+### Capa 4 — Modelo simplificado (api-maia)
+
+```python
+# Material detectado por Gemini (input para el MCP)
+class DetectedMaterial(BaseModel):
+    description: str                          # "fierros corrugados 1/2"
+    quantity: Optional[float] = None          # 10
+    unit: Optional[str] = None                # "varilla"
+    brand: Optional[str] = None               # null (solo si el cliente lo dijo)
+
+# Modelo de deteccion (lo que retorna Gemini)
+class DetectionResult(BaseModel):
+    delivery_location: Optional[str] = None
+    delivery_date: Optional[str] = None
+    tax_id: Optional[str] = None
+    email: Optional[str] = None
+    materials: list[DetectedMaterial] = []    # objetos con description + metadata basica
+    suggested_question: Optional[str] = None
+
+# MaterialItem sigue igual (lo que retorna el MCP)
+# Se conserva para persistencia en Firebase/BigQuery
+```
+
+### Capa 5 — MCP server: logica de enriquecimiento
+
+**Nuevo endpoint en api-obralex-py:**
+
+```
+POST /materials/analyze
+Body: {
+  "materials": [
+    { "description": "fierros corrugados 1/2", "quantity": 10, "unit": "varilla", "brand": null },
+    { "description": "cable thw 14 rojo", "quantity": 1, "unit": "rollo", "brand": null }
+  ]
+}
+
+Response: {
+  "products": [
+    { "original": "fierros corrugados 1/2", "product": "...", "quantity": 10, "unit": "varilla", "attributes": {...}, ... }
+  ]
+}
+```
+
+**Logica interna:**
+1. Por cada material objeto:
+   - Usar `description` para llamar schema → identificar categoria + required_fields
+   - Mapear valores de `description` a `attributes` tipados segun el schema
+   - Pasar `quantity`, `unit`, `brand` directamente (vienen ya extraidos por Gemini)
+   - Calcular completitud contra required_fields
+   - Si completo → buscar en inventario
+2. Retornar array de productos enriquecidos
+
+---
+
+## Diagrama de flujo propuesto
+
+```
+Cliente: "necesito 10 fierros corrugados 1/2, cable thw 14 rojo y 5 galones de pintura"
+                │
+        ┌───────┴────────┐
+        │   Gemini        │
+        │   (deteccion)   │
+        └───────┬────────┘
+                │
+        materials: [
+          {desc: "fierros corrugados 1/2", qty: 10, unit: "varilla", brand: null},
+          {desc: "cable thw 14 rojo",      qty: 1,  unit: "rollo",   brand: null},
+          {desc: "pintura latex blanca",   qty: 5,  unit: "galon",   brand: null}
+        ]
+                │
+        ┌───────┴────────┐
+        │   MCP Server    │
+        │   (calculo)     │
+        └───────┬────────┘
+                │
+        ┌───────┴──────────────────────────────────────────┐
+        │ "10 fierros corrugados 1/2"                      │
+        │  → schema("fierro") → Barras de Acero            │
+        │  → schema_source: "subcategory"                  │
+        │  → required: [measure]                           │
+        │  → attributes: {measure: "1/2"}                  │
+        │  → missing: []                                   │
+        │  → completion: 100% → search → match_id          │
+        │  → status: "complete"                            │
+        ├──────────────────────────────────────────────────┤
+        │ "cable thw 14 rojo"                              │
+        │  → schema("cable") → Cables                      │
+        │  → schema_source: "subcategory"                  │
+        │  → required: [cluster, compilation, color,       │
+        │     presentation, weight]                        │
+        │  → attributes: {cluster:"THW-90 BH", color:     │
+        │     "Rojo", ...}                                 │
+        │  → missing: [presentation, weight]               │
+        │  → completion: 60% → status: "incomplete"        │
+        ├──────────────────────────────────────────────────┤
+        │ "5 galones de pintura latex blanca"              │
+        │  → schema("pintura") → sin schema                │
+        │  → schema_source: "default"                      │
+        │  → category: "Pinturas" (de Vertex)              │
+        │  → deteccion basica: product, quantity, unit,    │
+        │     brand (si explicito)                         │
+        │  → status: "detected"                            │
+        │  → completion: null (sin schema para calcular)   │
+        └──────────────────────────────────────────────────┘
+                │
+        ┌───────┴────────┐
+        │   api-maia      │
+        │   (persistir)   │
+        │  Firebase + BQ  │
+        └────────────────┘
+```
+
+## Migracion por fases
+
+### Fase 1 — Crear tool `analyze_materials` en MCP (sin romper nada)
+
+| Que                                    | Donde            | Esfuerzo |
+| -------------------------------------- | ---------------- | -------- |
+| Endpoint `POST /materials/analyze`     | api-obralex-py   | Medio    |
+| Tool `analyze_materials` en MCP config | mcp-hub-equip    | Bajo     |
+| Tests con materials[] de prueba        | api-obralex-py   | Bajo     |
+
+**Entregable:** tool funcional que recibe strings y retorna products enriquecidos.
+
+### Fase 2 — Simplificar prompt y agent (api-maia)
+
+| Que                                     | Donde           | Esfuerzo |
+| --------------------------------------- | --------------- | -------- |
+| Nuevo prompt simplificado               | prompts.py      | Bajo     |
+| Nuevo modelo `DetectionResult`          | analyze.py      | Bajo     |
+| Refactor agent: deteccion + MCP call    | agent.py        | Medio    |
+| Eliminar `_calculate_completeness()`    | agent.py        | Bajo     |
+| Eliminar guardrail schema-first         | agent.py        | Bajo     |
+| Actualizar persistencia                 | agent.py        | Bajo     |
+
+**Entregable:** agente que solo detecta + delega calculo al MCP.
+
+### Fase 3 — Limpieza
+
+| Que                                       | Donde         | Esfuerzo |
+| ----------------------------------------- | ------------- | -------- |
+| Remover tools innecesarios del prompt     | prompts.py    | Bajo     |
+| Simplificar SYSTEM_INSTRUCTION (Maia web) | prompts.py    | Bajo     |
+| Actualizar docs                           | docs/         | Bajo     |
+
+---
+
+## Beneficios
+
+| Aspecto           | Actual                              | Propuesto                                 |
+| ----------------- | ----------------------------------- | ----------------------------------------- |
+| Prompt            | ~100 lineas con reglas de calculo   | ~20 lineas, solo deteccion                |
+| Inconsistencias   | Gemini se equivoca en calculos      | MCP server calcula deterministicamente    |
+| Escalabilidad     | Nuevo campo = cambio prompt+backend | Nuevo campo = cambio solo en MCP          |
+| Testabilidad      | Dificil testear calculo (depende LLM)| Facil testear MCP endpoint aislado       |
+| Tokens            | Prompt largo + JSON complejo        | Prompt corto + JSON simple                |
+| Latencia          | Gemini hace N tool calls secuenciales| 1 sola llamada MCP batch                 |
+
+## Cobertura gradual de categorias
+
+### Estado actual del schema (MVP)
+
+El archivo de referencia es `inventory_schemas_sanitized_19_mar_2026.json` (fuente: BigQuery `inventories-sanitized-prod`). Contiene solo **3 subcategorias** en **2 categorias**:
+
+| Subcategoria    | Categoria    | required_fields                                  |
+|-----------------|-------------|--------------------------------------------------|
+| Barras de Acero | Acero       | `measure`                                        |
+| Clavos          | Acero       | `measure`                                        |
+| Cables          | Electricidad | `cluster`, `compilation`, `color`, `presentation`, `weight` |
+
+**Categorias objetivo del MVP:** Acero, Electricidad y Tuberias, Valvulas y Conexiones (pendiente de agregar schema).
+
+Total inventarios indexados: **251 items**.
+
+### No se necesita allowlist de categorias
+
+El filtro de categorias es **implicito** — no se requiere un allowlist hardcodeado. El `InventorySchemaService` ya maneja esto con un fallback de 3 niveles:
+
+1. **Subcategory match** (`schema_source: "subcategory"`) → analisis completo con required_fields especificos del schema
+2. **Category match** (`schema_source: "category"`) → analisis con required_fields agregados (union de subcategorias de esa categoria)
+3. **Default fallback** (`schema_source: "default"`) → deteccion basica sin required_fields especificos
+
+Para materiales fuera de las 3 subcategorias con schema, el servicio retorna el default. Esto significa que el endpoint `analyze_materials` funciona para **cualquier material** — solo varia el nivel de profundidad del analisis.
+
+### Comportamiento del endpoint `analyze_materials` segun cobertura
+
+| Escenario | schema_source | Resultado |
+|-----------|---------------|-----------|
+| Material con subcategoria en schema (ej. "fierro corrugado" → Barras de Acero) | `subcategory` | Analisis completo: category, subcategory, required_fields especificos, attributes, completion_%, status, match_id |
+| Material con categoria en schema pero sin subcategoria exacta (ej. "alambre" → Acero) | `category` | Analisis parcial: category, subcategory (de Vertex), required_fields agregados de la categoria, attributes, completion_% |
+| Material sin schema (ej. "pintura latex", "escalera") | `default` | Deteccion basica: product, quantity, unit, brand, category (si Vertex lo identifica). Sin required_fields especificos, status = "detected" |
+
+### Escalabilidad
+
+Para agregar cobertura de una nueva categoria/subcategoria:
+1. Agregar schema en el JSON de schemas (via Colab de analisis BigQuery)
+2. Subir a GCS y recargar cache (`POST /schemas/reload`)
+3. El endpoint `analyze_materials` automaticamente usa los nuevos schemas — **sin cambios en codigo**
+
+Proximas categorias a agregar: Tuberias, Valvulas y Conexiones → luego expandir gradualmente.
+
+### Response incluye `schema_source`
+
+Cada producto en la respuesta incluye el campo `schema_source` para que el consumidor (api-maia) sepa el nivel de profundidad del analisis:
+
+```json
+{
+  "original": "10 fierros corrugados 1/2",
+  "product": "fierro corrugado",
+  "category": "Acero",
+  "subcategory": "Barras de Acero",
+  "schema_source": "subcategory",
+  "required_fields": ["measure"],
+  "attributes": { "measure": "1/2" },
+  "missing_attributes": [],
+  "completion_percentage": 100.0,
+  "status": "complete"
+}
+```
+
+```json
+{
+  "original": "cable thw 14 rojo rollo",
+  "product": "cable thw",
+  "category": "Electricidad",
+  "subcategory": "Cables",
+  "schema_source": "subcategory",
+  "required_fields": ["cluster", "compilation", "color", "presentation", "weight"],
+  "attributes": { "cluster": "THW-90 BH", "compilation": "THW-90 BH", "color": "Rojo", "presentation": "Rollo x 100mts", "weight": null },
+  "missing_attributes": ["weight"],
+  "completion_percentage": 80.0,
+  "status": "incomplete"
+}
+```
+
+```json
+{
+  "original": "5 galones de pintura latex blanca",
+  "product": "pintura latex",
+  "category": "Pinturas",
+  "subcategory": null,
+  "schema_source": "default",
+  "required_fields": [],
+  "attributes": {},
+  "missing_attributes": [],
+  "completion_percentage": null,
+  "status": "detected"
+}
+```
+
+---
+
+## Riesgos
+
+- **Calidad de datos en Vertex AI Search**: la identificacion de categoria/subcategoria depende de los datos indexados y los keywords/sinonimos configurados en `api-adatrack`. Si un material no esta bien indexado, cae al default. Mitigacion: mejorar el diccionario de sinonimos peruanos y expandir inventarios indexados de forma gradual
+
+## Consideraciones
+
+- **Fase 1 es independiente**: se puede desarrollar y testear sin tocar api-maia
+- **Rollback facil**: si el MCP tool falla, se puede volver al flujo actual sin cambios
+- **materials[] como contrato**: el formato objeto `{description, quantity, unit, brand}` es simple y estable. Gemini extrae los campos no-producto (quantity, unit, brand) que son triviales para un LLM pero dificiles con regex. El backend solo se enfoca en `description` para schema + atributos
+- **suggested_question**: sigue en el agente ya que depende del contexto conversacional
+- **Memoria de materiales**: Gemini sigue acumulando materials[] entre mensajes via historial
+
+## Compatibilidad
+
+- **Firebase `analysis_obralex`**: sigue recibiendo el mismo `AnalysisObralex` (materials con MaterialItem[])
+- **Firebase `products_obralex`**: sigue recibiendo el mismo array de productos
+- **BigQuery**: sin cambios, sigue recibiendo `materials` (strings) y `products` (JSON)
+- **Frontend**: sin cambios, sigue leyendo `products_obralex` con la misma estructura
+- **Endpoint `/compare`**: sin cambios
