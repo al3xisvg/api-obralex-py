@@ -5,7 +5,7 @@ from src.models.materials import (
     AnalyzeMaterialsResponse,
 )
 from src.services import VertexAISearchService, InventorySchemaService
-from src.services.material_analyzer import MaterialAnalyzerService
+from src.services.material_analyzer import MaterialAnalyzerService, ATTRIBUTE_FIELDS
 
 from src.core.config import Config
 
@@ -23,6 +23,11 @@ _analyzer_service = MaterialAnalyzerService(
     schema_service=_schema_service,
     search_service=_search_service,
 )
+
+
+@router.get("/materials/attribute-fields")
+async def get_attribute_fields():
+    return {"attribute_fields": ATTRIBUTE_FIELDS}
 
 
 @router.post("/materials/analyze", response_model=AnalyzeMaterialsResponse)

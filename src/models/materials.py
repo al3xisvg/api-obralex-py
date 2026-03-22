@@ -6,6 +6,7 @@ class DetectedMaterial(BaseModel):
     quantity: float | None = None
     unit: str | None = None
     brand: str | None = None
+    attributes: dict[str, str] | None = None
 
 
 class AnalyzeMaterialsRequest(BaseModel):
