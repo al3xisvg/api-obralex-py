@@ -49,7 +49,6 @@ class MaterialAnalyzerService:
         schema_source = schema.get("schema_source", "default")
         inventory_hint = schema.get("inventory_hint")
         required_fields = schema.get("required_fields", [])
-
         if schema_source == "default":
             return {
                 "original": description,
@@ -69,10 +68,14 @@ class MaterialAnalyzerService:
                 "match_id": None,
             }
 
-        # Extract attributes from Vertex AI Search result
-        attributes = self._extract_attributes_from_inventory(
-            inventory, required_fields
-        )
+        # Compare user-provided attributes against required_fields.
+        # Only attributes explicitly sent by the caller count as "filled".
+        # Vertex AI Search attributes are NOT used — they belong to the
+        # matched inventory item, not to what the user specified.
+        user_attrs = material.get("attributes") or {}
+        attributes = {
+            f: user_attrs.get(f) for f in required_fields
+        }
         missing = [f for f in required_fields if not attributes.get(f)]
         total = len(required_fields)
         filled = total - len(missing)
